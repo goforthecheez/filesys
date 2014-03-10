@@ -89,7 +89,7 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> B6: Explain why you chose to represent the current directory of a
 >> process the way you did.
 
-   	            	BUFFER CACHE
+   	            	BUFFER CACHE (C2),C3,C3
 			============
 
 ---- DATA STRUCTURES ----
@@ -98,14 +98,58 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+Moved from filesys/filesys.c to filesys/filesys.h:
+
+    /* Partiton that contains the file system. */
+    struct block *fs_device;
+
+Created in cache.h:
+
+    #define BUFFER_CACHE_SIZE 64
+
+    /* Representation of a single disk block sector in the buffer cache. */
+    struct cache_entry
+      {
+        bool valid;                        /* Whether contents are
+                                              trustworthy. */
+        block_sector_t sector;             /* Disk block sector. */
+        uint8_t data[BLOCK_SECTOR_SIZE];   /* Contents of the disk block
+                                              sector. */
+        bool dirty;                        /* Whether there are pending
+                                              writes. */
+        bool accessed;                     /* whether recently accessed. */
+        struct lock lock;                  /* Lock on the cache entry. */
+        int users;                         /* Number of readers & writers. */
+      };
+
+    /* Buffer cache keeps track of recently used disk block sectors. */
+    struct buffer_cache
+      {
+        struct cache_entry cache[BUFFER_CACHE_SIZE];  /* Buffer cache
+                                                         entries. */
+        int hand;                                     /* Clock hand; indexes
+                                                         cache. */
+        struct lock lock;                             /* Buffer cache lock. */
+      };
+
+    struct buffer_cache buffer_cache;       /* (Global) buffer cache. */
+
 ---- ALGORITHMS ----
 
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
 
-I used the clock algorithm with 1 hand to decide how to replace cache blocks. The cache is only 64 entries large, which is small enough that there is no real performance advantage to having a second hand; this also simplifies the code.
+(Need modifications to get rid of buffer cache lock. Users/accessors may also change as the clock hand passes by.)
+
+I modified the clock algorithm with 1 hand to decide how to replace cache blocks. The cache is only 64 entries large, which is small enough that there is no real performance advantage to having a second hand; this also simplifies the code.
+
+It is unsafe to evict a block while other processes are reading from it or writing to it. So the buffer cache entry has a count of "users" (readers/writers). If this is not zero, my algorithm skips over this entry (leaving it marked as accessed). If it is zero, then it is marked as not accessed. Once the clock hand sees a block that is marked not accessed, that block will be immediately evicted and its index returned to the caller.
+
+If all blocks are currently being accessed, then no block can be evicted. In this case, the evicting process will sleep and try again. (It will take 2 full clock hand sweeps to know whether this is the case.)
 
 >> C3: Describe your implementation of write-behind.
+
+I need an alarm clock...
 
 >> C4: Describe your implementation of read-ahead.
 
@@ -115,19 +159,21 @@ I used the clock algorithm with 1 hand to decide how to replace cache blocks. Th
 >> buffer cache block, how are other processes prevented from evicting
 >> that block?
 
-By requiring all processes to acquire the lock for that cache entry.
+For every reader or writer, the "user" count is incremented by one. As long as the user count is positive, my modified clock algorithm prevents that block from being evicted.
 
 >> C6: During the eviction of a block from the cache, how are other
 >> processes prevented from attempting to access the block?
 
-The cache entry lock is insufficient here because if a block is being evicted, it will have acquired the lock and a process that thinks the block is still there will wait on the lock. When the lock is released, the waiting process will then be reading null data.
-
-In this case, we set the valid flag as the first step of the eviction. A block_sector_t that is there but invalid will be considered as missing. The searching process will see this as the sector not being present.
+Each buffer cache entry also has a "valid" flag, which indicates whether the contents of that buffer cache entry are valid or not. As the first step of evicting a block, the valid flag is set to false, and the cache_lookup algorithm treats this as a sector not existing there. When a block is read into a cache entry, the valid flag is the last thing set; as long as the valid flag is true, the contents of the buffer cache entry are consistent. This will prevent processes from trying to access the block while it is being evicted.
 
 ---- RATIONALE ----
 
 >> C7: Describe a file workload likely to benefit from buffer caching,
 >> and workloads likely to benefit from read-ahead and write-behind.
+
+A workload likely to benefit from buffer caching would be reading to writing from one or a few blocks frequently. An example workload is breaking up a data file into several files, one for each of several repeated keys. (For example, given a list of hospitals in the US and their location, you want to break the list into a list of hospitals for each state in the US.) Then for each record in the data file, you would need to decide which of several blocks to write to, then go back to the data file. In this case, it would be better to have the blocks available in the buffer cache than to frequently read and write to disk directly.
+
+A workload that would likely benefit from read-ahead and write-behind is a merge of two columns of a very long CSV file. Since the CSV is very long, it spans multiple disk sectors. Since the merges happen sequentially on rows of the CSV, it would save time read-ahead rather than look up the next block at the time it was needed, which will definitely happen. At the same time, because previous blocks of the CSV are not being picked up immediately by a subsequent process, it is okay if there is a slight delay between writing to the buffer cache and writing to the disk, and write-behind saves time by not blocking execution.
 
        		    	SURVEY QUESTIONS
 			================

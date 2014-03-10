@@ -164,11 +164,12 @@ decrement_users (int index)
   lock_release (&buffer_cache.cache[index].lock);
 }
 
-/* Clears the buffer cache entry at INDEX. */
 void
 cache_clear (int index)
 {
-  block_write (fs_device, buffer_cache.cache[index].sector,
-               buffer_cache.cache[index].data);
   buffer_cache.cache[index].valid = false;
+  //  if (buffer_cache.cache[index].dirty == true)
+    block_write (fs_device, buffer_cache.cache[index].sector,
+                 buffer_cache.cache[index].data);
+
 }
