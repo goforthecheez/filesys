@@ -5,6 +5,9 @@
 #include "filesys/off_t.h"
 #include "threads/synch.h"
 
+/* Partiton that contains the file system. */
+struct block *fs_device;
+
 /* File system lock. Currently, the file system does not provide internal
    synchronization, so this will have to suffice. */
 struct lock filesys_lock;
