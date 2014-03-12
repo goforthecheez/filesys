@@ -1,6 +1,7 @@
 #include "filesys/free-map.h"
 #include <bitmap.h>
 #include <debug.h>
+#include <stdio.h>
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
@@ -38,6 +39,18 @@ free_map_allocate (size_t cnt, block_sector_t *sectorp)
   if (sector != BITMAP_ERROR)
     *sectorp = sector;
   return sector != BITMAP_ERROR;
+}
+
+/* Allocates one sector from the free map and returns the sector's address.
+   If the operation failed, returns -1. */
+block_sector_t
+free_map_allocate_one ()
+{
+  block_sector_t new_alloc;
+  bool success = free_map_allocate (1, &new_alloc);
+  if (!success)
+    return -1;
+  return new_alloc;
 }
 
 /* Makes CNT sectors starting at SECTOR available for use. */

@@ -58,6 +58,7 @@ Adeline Wong <adelinew@alumni.stanford.edu>
 >> structure, and what advantages and disadvantages does your
 >> structure have, compared to a multilevel index?
 
+1 double indirect block is enough to address 8mb (because 128 references * 128 references = 16k = 8mb / 512b). 80-20 rule says 100 direct, 25 indirect, and the 1 double indirect.
    	     	       SUBDIRECTORIES
 		       ==============
 
