@@ -13,7 +13,7 @@
 #define INODE_MAGIC 0x494e4f44
 
 /* Number of addresses per block. */
-#define ADDRS_PER_BLOCK BLOCK_SECTOR_SIZE / 4
+#define ADDRS_PER_BLOCK (BLOCK_SECTOR_SIZE / 4)
 
 /* Number of direct blocks per inode. */
 #define DIRECT_BLOCKS 100
@@ -28,8 +28,8 @@ struct inode_disk
     off_t length;                            /* File size in bytes. */
     unsigned magic;                          /* Magic number. */
     block_sector_t direct[DIRECT_BLOCKS];    /* Direct blocks. */
-    uint32_t *indirect[INDIRECT_BLOCKS];     /* Indirect block. */
-    uint32_t *doubly_indirect;               /* Doubly indirect block. */
+    block_sector_t *indirect[INDIRECT_BLOCKS];     /* Indirect block. */
+    block_sector_t ***doubly_indirect;             /* Doubly indirect block. */
   };
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -68,12 +68,26 @@ byte_to_sector (const struct inode *inode, off_t pos)
       direct_idx -= DIRECT_BLOCKS;
       int indirect_idx = direct_idx / ADDRS_PER_BLOCK;
       int indirect_ofs = direct_idx % ADDRS_PER_BLOCK;
-      if (direct_idx < INDIRECT_BLOCKS)
-        return *(inode->data.indirect[indirect_idx] + indirect_ofs);
+      if (direct_idx < ADDRS_PER_BLOCK * INDIRECT_BLOCKS)
+        {
+          block_sector_t *sector = malloc (BLOCK_SECTOR_SIZE);
+          block_read (fs_device, inode->data.indirect[indirect_idx], sector);
+          block_sector_t temp = *(sector + indirect_ofs);
+          free (sector);
+          return temp;
+        }
  
-      //int dbl_indirect_ofs = indirect_idx % ADDRS_PER_BLOCK;
-      //return *(inode->data.doubly_indirect) + dbl_indirect_ofs;
-      return -1;     // REMOVE if commented lines above are uncommented
+      direct_idx -= INDIRECT_BLOCKS * ADDRS_PER_BLOCK;
+      int dbl_indirect_idx = direct_idx / ADDRS_PER_BLOCK;
+      int dbl_indirect_ofs = direct_idx % ADDRS_PER_BLOCK;
+      block_sector_t **dbl_sector = malloc (BLOCK_SECTOR_SIZE);
+      block_read (fs_device, inode->data.doubly_indirect, dbl_sector);
+      block_sector_t **dbl_sector_ofs = malloc (BLOCK_SECTOR_SIZE);
+      block_read (fs_device, *(dbl_sector + dbl_indirect_idx), dbl_sector_ofs);
+      block_sector_t temp = *(dbl_sector_ofs + dbl_indirect_ofs);
+      free (dbl_sector);
+      free (dbl_sector_ofs);
+      return temp;
     }
   else
     return -1;
@@ -113,15 +127,12 @@ inode_create (block_sector_t sector, off_t length)
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
-      int k;
-      for (k = 0; k < INDIRECT_BLOCKS; k++)
-        disk_inode->indirect[k] = (uint32_t *) calloc (1, BLOCK_SECTOR_SIZE);
-      //disk_inode->indirect = calloc (1, BLOCK_SECTOR_SIZE);
 
       if (sectors > 0)
         {
           static char zeros[BLOCK_SECTOR_SIZE];
 
+          /* Direct blocks. */
           unsigned i;
           for (i = 0; i < sectors && i < DIRECT_BLOCKS; i++)
             {
@@ -129,6 +140,7 @@ inode_create (block_sector_t sector, off_t length)
               block_write (fs_device, disk_inode->direct[i], zeros);
             }
 
+          /* Indirect blocks. */
 	  if (i == DIRECT_BLOCKS)
             {
               sectors -= i;
@@ -139,12 +151,53 @@ inode_create (block_sector_t sector, off_t length)
                 {
 		  int ofs = i % ADDRS_PER_BLOCK;
                   if (ofs == 0)
-                    j++;
+                    {
+		      if (j >= 0)
+                        {
+                          block_sector_t *temp = disk_inode->indirect[j];
+                          disk_inode->indirect[j] = free_map_allocate_one ();
+                          block_write (fs_device, disk_inode->indirect[j], temp);
+                          free (temp);
+                        }
+                      j++;
+                      disk_inode->indirect[j] = (block_sector_t *) calloc (1, BLOCK_SECTOR_SIZE);
+                    }
                   *(disk_inode->indirect[j] + ofs) = free_map_allocate_one ();
                   block_write (fs_device, *(disk_inode->indirect[j] + ofs),
                                zeros);
                 }
+	      block_sector_t *temp = disk_inode->indirect[j];
+              disk_inode->indirect[j] = free_map_allocate_one ();
+              block_write (fs_device, disk_inode->indirect[j], temp);
+              free (temp);
 	    }
+
+          /* Doubly indirect blocks. */
+	  disk_inode->doubly_indirect = (uint32_t ***) calloc (1, BLOCK_SECTOR_SIZE);
+	  if (i == ADDRS_PER_BLOCK * INDIRECT_BLOCKS)
+            {
+              sectors -= i;
+              int j;
+              int p;
+              for (j = 0; j < ADDRS_PER_BLOCK && i < sectors; j++)
+                {
+                  *(disk_inode->doubly_indirect + j) = (uint32_t **) calloc (1, BLOCK_SECTOR_SIZE);
+                  for (p = 0; p < ADDRS_PER_BLOCK && i < sectors; p++)
+                    {
+  		      *(*(*(disk_inode->doubly_indirect) + j) + p) = free_map_allocate_one ();
+                      block_write (fs_device, *(*(*(disk_inode->doubly_indirect) + j) + p), zeros);
+                      i++;
+                    }
+                  block_sector_t *temp = *(disk_inode->doubly_indirect + j);
+                  *(disk_inode->doubly_indirect + j) = free_map_allocate_one ();
+                  block_write (fs_device, *(disk_inode->doubly_indirect + j), temp);
+                  free (temp);
+                }
+	    }
+          block_sector_t *temp = disk_inode->doubly_indirect;
+          disk_inode->doubly_indirect = free_map_allocate_one ();
+          block_write (fs_device, disk_inode->doubly_indirect, temp);
+          free (temp);
         }
       block_write (fs_device, sector, disk_inode);
       success = true;
