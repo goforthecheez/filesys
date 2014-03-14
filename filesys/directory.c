@@ -16,8 +16,10 @@ struct dir
 /* A single directory entry. */
 struct dir_entry 
   {
+    bool isdir;                         /* If true, this is a directory. */
     block_sector_t inode_sector;        /* Sector number of header. */
-    char name[NAME_MAX + 1];            /* Null terminated file name. */
+    char name[NAME_MAX + 1];            /* Null terminated file or directory
+                                           name. */
     bool in_use;                        /* In use or free? */
   };
 
@@ -89,7 +91,7 @@ dir_get_inode (struct dir *dir)
    directory entry if OFSP is non-null.
    otherwise, returns false and ignores EP and OFSP. */
 static bool
-lookup (const struct dir *dir, const char *name,
+lookup (const struct dir *dir, const char *name, 
         struct dir_entry *ep, off_t *ofsp) 
 {
   struct dir_entry e;
@@ -139,7 +141,8 @@ dir_lookup (const struct dir *dir, const char *name,
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
 bool
-dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
+dir_add (struct dir *dir, const char *name, block_sector_t inode_sector,
+         bool isdir)
 {
   struct dir_entry e;
   off_t ofs;
@@ -172,6 +175,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   e.in_use = true;
   strlcpy (e.name, name, sizeof e.name);
   e.inode_sector = inode_sector;
+  e.isdir = isdir;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
  done:
