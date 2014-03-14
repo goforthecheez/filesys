@@ -122,9 +122,7 @@ void
 cache_read_disk (block_sector_t sector, int index)
 {
   buffer_cache.cache[index].sector = sector;
-  //printf ("before read\n");
   block_read (fs_device, sector, buffer_cache.cache[index].data);
-  //printf ("after read\n");
   buffer_cache.cache[index].dirty = false;
   buffer_cache.cache[index].accessed = true;
   buffer_cache.cache[index].users = 1;
