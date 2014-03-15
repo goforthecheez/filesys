@@ -1,5 +1,6 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "devices/input.h"
 #include "devices/shutdown.h"
@@ -31,6 +32,11 @@ int write (int, const void*, unsigned);
 void seek (int, unsigned);
 unsigned tell (int);
 void close (int);
+bool chdir (const char *);
+bool mkdir (const char *);
+bool readdir (int, char *);
+bool isdir (int);
+int inumber (int);
 void check_args (void *, void *, void *);
 struct file *lookup_fd (int);
 
@@ -61,23 +67,23 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       case SYS_EXEC:
         check_args (ARG_ONE, NULL, NULL);
-        f->eax = exec (*(char **)ARG_ONE);
+        f->eax = exec (*(char **) ARG_ONE);
         break;
       case SYS_WAIT:
         check_args (ARG_ONE, NULL, NULL);
-        f->eax = wait (*(unsigned *)ARG_ONE);
+        f->eax = wait (*(unsigned *) ARG_ONE);
         break;
       case SYS_CREATE:
         check_args (ARG_ONE, ARG_TWO, NULL);
-        f->eax = create (*(char **)ARG_ONE, *(unsigned *)ARG_TWO);
+        f->eax = create (*(char **) ARG_ONE, *(unsigned *) ARG_TWO);
         break;
     case SYS_REMOVE:
         check_args (ARG_ONE, NULL, NULL);
-        f->eax = remove (*(char **)ARG_ONE);
+        f->eax = remove (*(char **) ARG_ONE);
         break;
       case SYS_OPEN:
         check_args (ARG_ONE, NULL, NULL);
-	f->eax = open (*(char **)ARG_ONE);
+	f->eax = open (*(char **) ARG_ONE);
         break;
       case SYS_FILESIZE:
         check_args (ARG_ONE, NULL, NULL);
@@ -85,11 +91,11 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       case SYS_READ:
         check_args (ARG_ONE, ARG_TWO, ARG_THREE);
-	f->eax = read (*ARG_ONE, *(char **)ARG_TWO, *(unsigned *)ARG_THREE);
+	f->eax = read (*ARG_ONE, *(char **) ARG_TWO, *(unsigned *) ARG_THREE);
         break;
       case SYS_WRITE:
         check_args (ARG_ONE, ARG_TWO, ARG_THREE);
-	f->eax = write (*ARG_ONE, *(char **)ARG_TWO, *(unsigned *)ARG_THREE);
+	f->eax = write (*ARG_ONE, *(char **) ARG_TWO, *(unsigned *) ARG_THREE);
         break;
       case SYS_TELL:
         check_args (ARG_ONE, NULL, NULL);
@@ -97,11 +103,31 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       case SYS_SEEK:
         check_args (ARG_ONE, ARG_TWO, NULL);
-        seek (*ARG_ONE, *(unsigned *)ARG_TWO);
+        seek (*ARG_ONE, *(unsigned *) ARG_TWO);
         break;
       case SYS_CLOSE:
         check_args (ARG_ONE, NULL, NULL);
         close (*ARG_ONE);
+        break;
+      case SYS_CHDIR:
+        check_args (ARG_ONE, NULL, NULL);
+        f->eax = chdir (*(char **) ARG_ONE);
+        break;
+      case SYS_MKDIR:
+        check_args (ARG_ONE, NULL, NULL);
+        f->eax = mkdir (*(char **) ARG_ONE);
+	break;
+      case SYS_READDIR:
+        check_args (ARG_ONE, ARG_TWO, NULL);
+        f->eax = readdir (*ARG_ONE, *(char **) ARG_TWO);
+        break;
+      case SYS_ISDIR:
+        check_args (ARG_ONE, NULL, NULL);
+        f->eax = isdir (*ARG_ONE);
+        break;
+      case SYS_INUMBER:
+        check_args (ARG_ONE, NULL, NULL);
+        f->eax = inumber (*ARG_ONE);
         break;
       default:
         exit (-1);
@@ -391,4 +417,105 @@ lookup_fd (int fd)
   struct file *f = hash_entry (e, struct file, elem);
 
   return f;
+}
+
+/* Changes the current working directory of the process to DIR, which may be
+   relative or absolute. Returns true if successful, false on failure. */
+bool
+chdir (const char *dir)
+{
+  struct thread *t = thread_current ();
+
+  if (pagedir_get_page (t->pagedir, dir) == NULL)
+    exit (-1);
+
+  /* Determine the "root" directory. */
+  struct dir *real_dir;
+  char *token, *save_ptr;
+  if (strchr (dir, "/") == dir)
+    {
+      token = strtok_r (dir + 1, "/", &save_ptr);
+      real_dir = dir_open_root ();
+    }
+  else
+    {
+      token = strtok_r (dir, "/", &save_ptr);
+      real_dir = t->cwd;
+    }
+
+  /* Crawl down the directory string. */
+  struct inode **inode;
+  for (; token != NULL; token = strtok_r (NULL, "/", &save_ptr))
+    {
+      if (!dir_lookup (real_dir, token, inode))
+        return false;
+
+      // Fail if you ever reach a file
+
+      real_dir = dir_open (*inode);
+    }
+  t->cwd = real_dir;
+
+  return true;
+}
+
+/* Creates the directory named dir, which may be relative or absolute. Returns true if successful, false on failure. Fails if dir already exists or if any directory name in dir, besides the last, does not already exist. That is, mkdir("/a/b/c") succeeds only if /a/b already exists and /a/b/c does not. */
+bool
+mkdir (const char *dir)
+{
+  struct thread *t = thread_current ();
+
+  if (pagedir_get_page (t->pagedir, dir) == NULL)
+    exit (-1);
+
+  /* Determine the "root" directory. */
+  struct dir *real_dir;
+  char *token, *save_ptr;
+  if (strchr (dir, "/") == dir)
+    {
+      token = strtok_r (dir + 1, "/", &save_ptr);
+      real_dir = dir_open_root ();
+    }
+  else
+    {
+      token = strtok_r (dir, "/", &save_ptr);
+      real_dir = t->cwd;
+    }
+
+  /* Crawl down the directory string. */
+  struct inode **inode;
+  for (; token != NULL; token = strtok_r (NULL, "/", &save_ptr))
+    {
+      if (!dir_lookup (real_dir, token, inode))
+        {
+	  block_sector_t dir_sector = free_map_allocate_one ();
+          dir_create (dir_sector, 0);
+          dir_add (real_dir, token, dir_sector, false);
+          return true;
+        }
+
+      real_dir = dir_open (*inode);      
+    }
+  return false;
+}
+
+/* Reads a directory entry from file descriptor fd, which must represent a directory. If successful, stores the null-terminated file name in name, which must have room for READDIR_MAX_LEN + 1 bytes, and returns true. If no entries are left in the directory, returns false.
+   . and .. should not be returned by readdir.*/
+bool
+readdir (int fd, char *name)
+{
+  
+}
+
+/* Returns true if fd represents a directory, false if it represents an ordinary file. */
+bool
+isdir (int fd)
+{
+  //struct file *f = lookup_fd (fd);
+}
+
+/* Returns the inode number of the inode associated with fd, which may represent an ordinary file or a directory. */
+int
+inumber (int fd)
+{
 }

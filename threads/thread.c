@@ -222,6 +222,9 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  if (strcmp (t->name, "main") == 0)
+    t->cwd = dir_open_root ();
+
   if (strcmp (t->name, "idle") != 0)
     {
       t->parent = thread_current ();
@@ -239,6 +242,9 @@ thread_create (const char *name, int priority,
       c->pid = tid;
       c->done = false;
       hash_insert (t->parent->children, &c->elem);
+
+      /* Inherit parent's current working directory. */
+      t->cwd = t->parent->cwd;
     }
 
   return tid;

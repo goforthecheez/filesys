@@ -16,6 +16,8 @@ struct dir
 /* A single directory entry. */
 struct dir_entry 
   {
+    //int fd;                             /* File descriptor. */
+    //struct hash_elem elem;              /* Hashtable element. */
     bool isdir;                         /* If true, this is a directory. */
     block_sector_t inode_sector;        /* Sector number of header. */
     char name[NAME_MAX + 1];            /* Null terminated file or directory
