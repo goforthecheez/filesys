@@ -4,8 +4,12 @@
 #include <syscall-nr.h>
 #include "devices/input.h"
 #include "devices/shutdown.h"
+#include "filesys/directory.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "filesys/free-map.h"
+#include "filesys/inode.h"
+#include "lib/kernel/hash.h"
 #include "lib/user/syscall.h"
 #include "threads/interrupt.h"
 #include "threads/malloc.h"
@@ -26,7 +30,7 @@ int wait (pid_t);
 bool create (const char *, unsigned);
 bool remove (const char *);
 int open (const char *);
-int filesize (int );
+int filesize (int);
 int read (int, void *, unsigned);
 int write (int, const void*, unsigned);
 void seek (int, unsigned);
@@ -37,8 +41,9 @@ bool mkdir (const char *);
 bool readdir (int, char *);
 bool isdir (int);
 int inumber (int);
+char *abs_path (const char *);
 void check_args (void *, void *, void *);
-struct file *lookup_fd (int);
+struct inode *lookup_fd (int);
 
 void
 syscall_init (void) 
@@ -207,30 +212,34 @@ wait (pid_t pid)
 }
 
 /* Creates a new file initially initial_size bytes in size. Returns true if
-   successful, false otherwise. Note the creating a file does not open it. */
+   successful, false otherwise. Note that creating a file does not open it. */
 bool
-create (const char *file, unsigned initial_size)
+create (const char *path, unsigned initial_size)
 {
-  if (pagedir_get_page (thread_current ()->pagedir, file) == NULL)
+  if (pagedir_get_page (thread_current ()->pagedir, path) == NULL)
     exit (-1);
 
+  char *ap = abs_path (path);
+
   lock_acquire (&filesys_lock);
-  bool success = filesys_create (file, initial_size, false);
+  bool success = filesys_create (ap, initial_size, false);
   lock_release (&filesys_lock);
 
   return success;
 }
 
-/* Deletes the file FILE. Returns true if successful, false otherwise.
-   Note that removing an open file does not close it. */
+/* Deletes the file or directory PATH. Returns true if successful, false
+   otherwise. Note that removing an open object does not close it. */
 bool
-remove (const char *file)
+remove (const char *path)
 {
-  if (pagedir_get_page (thread_current ()->pagedir, file) == NULL)
+  if (pagedir_get_page (thread_current ()->pagedir, path) == NULL)
     exit (-1);
 
+  char *ap = abs_path (path);
+
   lock_acquire (&filesys_lock);
-  bool success = filesys_remove (file);
+  bool success = filesys_remove (ap);
   lock_release (&filesys_lock);
 
   return success;
@@ -239,33 +248,70 @@ remove (const char *file)
 /* Opens the file FILE and returns its file descriptor, or -1 if the file could
    not be opened. */
 int
-open (const char *file)
+open (const char *path)
 {
   struct thread *t = thread_current ();
 
-  if (pagedir_get_page (t->pagedir, file) == NULL)
+  if (pagedir_get_page (t->pagedir, path) == NULL)
     exit (-1);
 
-  lock_acquire (&filesys_lock);
-  struct file *f = filesys_open (file);
-  lock_release (&filesys_lock);
-  if (f == NULL)
-      return -1;
-  hash_insert (t->open_files, &f->elem);
+  if (strchr (path, '\0') == path)
+    return -1;
 
-  return f->fd;
+  if (strcmp (path, "/") == 0)
+    {
+      struct dir *dir = dir_open_root ();
+
+      //if (hash_find (t->open_inodes, &dir->inode->hashelem) != NULL)
+      //dir = dir_reopen (dir);
+
+      hash_insert (t->open_inodes, &dir->inode->hashelem);
+      printf ("open: fd is %i\n", dir->inode->fd);
+      return dir->inode->fd;
+    }
+
+  char *ap = abs_path (path);
+
+  lock_acquire (&filesys_lock);
+  struct inode *inode = filesys_open (ap);
+  lock_release (&filesys_lock);
+  if (inode == NULL)
+      return -1;
+
+  if (inode->isdir)
+    {
+      struct dir *dir = dir_open (inode);
+
+      //if (hash_find (t->open_inodes, &inode->hashelem) != NULL)
+      //dir = dir_reopen (dir);
+
+      hash_insert (t->open_inodes, &dir->inode->hashelem);
+      printf ("open: fd is %i\n", dir->inode->fd);
+      return dir->inode->fd;
+    }
+  else
+    {
+      struct file *file = file_open (inode);
+
+      //if (hash_find (t->open_inodes, &inode->hashelem) != NULL)
+      //file = file_reopen (file);
+
+      hash_insert (t->open_inodes, &file->inode->hashelem);
+      printf ("open: fd is %i\n", file->inode->fd);
+      return file->inode->fd;
+    }
 }
 
 /* Returns the size, in bytes, of the file open as FD. */
 int
 filesize (int fd)
 {
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
       exit (-1);
 
   lock_acquire (&filesys_lock);
-  int len = file_length (f);
+  int len = file_length ((struct file *) inode->object);
   lock_release (&filesys_lock);
 
   return len;
@@ -290,12 +336,12 @@ read (int fd, void *buffer, unsigned size)
       return i;
     }
 
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
       exit (-1);
 
   lock_acquire (&filesys_lock);
-  int bytes_read = file_read (f, buffer, size);
+  int bytes_read = file_read ((struct file *) inode->object, buffer, size);
   lock_release (&filesys_lock);
 
   return bytes_read;
@@ -319,12 +365,14 @@ write (int fd, const void *buffer, unsigned size)
       return size;
     }
 
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
-      exit (-1);
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
+    exit (-1);
+  if (inode->isdir)
+    exit (-1);
 
   lock_acquire (&filesys_lock);
-  int bytes_written = file_write (f, buffer, size);
+  int bytes_written = file_write ((struct file *) inode->object, buffer, size);
   lock_release (&filesys_lock);
 
   return bytes_written;
@@ -336,12 +384,12 @@ write (int fd, const void *buffer, unsigned size)
 void
 seek (int fd, unsigned position)
 {
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
       exit (-1);
 
   lock_acquire (&filesys_lock);
-  file_seek (f, position);
+  file_seek ((struct file *) inode->object, position);
   lock_release (&filesys_lock);
 }
 
@@ -350,12 +398,12 @@ seek (int fd, unsigned position)
 unsigned
 tell (int fd)
 {
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
       exit (-1);
 
   lock_acquire (&filesys_lock);
-  unsigned pos = file_tell (f);
+  unsigned pos = file_tell ((struct file *) inode->object);
   lock_release (&filesys_lock);
 
   return pos;
@@ -372,17 +420,112 @@ void close (int fd)
   if (fd == 0 || fd == 1 || fd == 2)
     exit (-1);
 
-  struct file *f = lookup_fd (fd);
-  if (f == NULL)
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
       exit (-1);
 
-  /* If the lookup succeeded, delete the file from open_files. */
-  struct file lookup;
+  /* If the lookup succeeded, delete the inode from open_inodes. */
+  struct inode lookup;
   lookup.fd = fd;
-  hash_delete (t->open_files, &lookup.elem);  
+  hash_delete (t->open_inodes, &lookup.hashelem);
+  
   lock_acquire (&filesys_lock);
-  file_close (f);
+  if (inode->isdir)
+    dir_close ((struct dir *) inode->object);
+  else
+    file_close ((struct file *) inode->object);
   lock_release (&filesys_lock);
+}
+
+/* Changes the current working directory of the process to PATH, which may be
+   relative or absolute. Returns true if successful, false on failure. */
+bool
+chdir (const char *path)
+{
+  struct thread *t = thread_current ();
+
+  if (pagedir_get_page (t->pagedir, path) == NULL)
+    exit (-1);
+
+  char *ap = abs_path (path);
+  //printf ("absolute path: %s\n", ap);
+
+  // Don't forget to remove the final "/"!
+  *(t->cwd) = ap;
+
+  return true;
+}
+
+/* Creates the directory named PATH, which may be relative or absolute.
+   Returns true if successful, false on failure. Fails if dir already
+   exists or if any directory name in dir, besides the last, does not
+   already exist. That is, mkdir("/a/b/c") succeeds only if /a/b already
+   exists and /a/b/c does not. */
+bool
+mkdir (const char *path)
+{
+  if (pagedir_get_page (thread_current ()->pagedir, path) == NULL)
+    exit (-1);
+
+  char *ap = abs_path (path);
+  //printf ("mkdir: abs_path is %s\n", ap);
+  struct dir *dir = dir_open_root ();
+  char *token, *save_ptr;
+
+  /* Crawl down the absolute path string. */
+  struct inode *inode = malloc (sizeof inode);
+  for (token = strtok_r (ap, "/", &save_ptr);
+       token != NULL; token = strtok_r (NULL, "/", &save_ptr))
+    {
+      if (!dir_lookup (dir, token, &inode))
+        {
+	  block_sector_t dir_sector = free_map_allocate_one ();
+          dir_create (dir_sector, 0);
+          dir_add (dir, token, dir_sector, true);
+          return true;
+        }
+
+      dir = dir_open (inode);
+    }
+
+  return false;
+}
+
+/* Reads a directory entry from file descriptor fd, which must represent a directory. If successful, stores the null-terminated file name in name, which must have room for READDIR_MAX_LEN + 1 bytes, and returns true. If no entries are left in the directory, returns false.
+   . and .. should not be returned by readdir.*/
+bool
+readdir (int fd, char *name)
+{
+  if (pagedir_get_page (thread_current ()->pagedir, name) == NULL)
+    exit (-1);
+
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
+    return false;
+
+  return dir_readdir ((struct dir *) inode->object, name);
+}
+
+/* Returns true if fd represents a directory, false if it represents an ordinary file. */
+bool
+isdir (int fd)
+{
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
+    exit (-1);
+
+  return inode->isdir;
+}
+
+/* Returns the inode number of the inode associated with fd, which may represent an ordinary file or a directory. */
+int
+inumber (int fd)
+{
+  struct inode *inode = lookup_fd (fd);
+  if (inode == NULL)
+    exit (-1);
+
+  return inode->sector;
 }
 
 /* Verify that the passed syscall arguments are valid pointers.
@@ -402,120 +545,51 @@ check_args (void *first, void *second, void *third)
     exit (-1);
 }
 
-/* Given a file descriptor FD, returns its corresponding file. If no file is
-   found, return NULL). */
-struct file *
+/* Given a file descriptor FD, returns its corresponding inode. If no
+   inode is found, return NULL). */
+struct inode *
 lookup_fd (int fd)
 {
   struct thread *t = thread_current ();
 
-  struct file lookup;
+  struct inode lookup;
   lookup.fd = fd;
-  struct hash_elem *e = hash_find (t->open_files, &lookup.elem);
+  struct hash_elem *e = hash_find (t->open_inodes, &lookup.hashelem);
   if (e == NULL)
     return NULL;
-  struct file *f = hash_entry (e, struct file, elem);
 
-  return f;
+  return hash_entry (e, struct inode, hashelem);
 }
 
-/* Changes the current working directory of the process to DIR, which may be
-   relative or absolute. Returns true if successful, false on failure. */
-bool
-chdir (const char *dir)
+/* Given an absolute or relative path PATH, returns the absolute path. */
+char *
+abs_path (const char *path)
 {
-  struct thread *t = thread_current ();
+  const char *cwd = *thread_current ()->cwd;
 
-  if (pagedir_get_page (t->pagedir, dir) == NULL)
-    exit (-1);
-
-  /* Determine the "root" directory. */
-  struct dir *real_dir;
-  char *token, *save_ptr;
-  if (strchr (dir, "/") == dir)
+  char *abs_path;
+  if (strchr (path, '/') == path)
     {
-      token = strtok_r (dir + 1, "/", &save_ptr);
-      real_dir = dir_open_root ();
-    }
-  else
-    {
-      token = strtok_r (dir, "/", &save_ptr);
-      real_dir = t->cwd;
+      int length = strlen (path) + 1;
+      abs_path = malloc (length);
+      strlcpy (abs_path, path, length);
+      return abs_path;
     }
 
-  /* Crawl down the directory string. */
-  struct inode **inode;
-  for (; token != NULL; token = strtok_r (NULL, "/", &save_ptr))
+  if (strcmp (cwd, "/") == 0)
     {
-      if (!dir_lookup (real_dir, token, inode))
-        return false;
-
-      // Fail if you ever reach a file
-
-      real_dir = dir_open (*inode);
-    }
-  t->cwd = real_dir;
-
-  return true;
-}
-
-/* Creates the directory named dir, which may be relative or absolute. Returns true if successful, false on failure. Fails if dir already exists or if any directory name in dir, besides the last, does not already exist. That is, mkdir("/a/b/c") succeeds only if /a/b already exists and /a/b/c does not. */
-bool
-mkdir (const char *dir)
-{
-  struct thread *t = thread_current ();
-
-  if (pagedir_get_page (t->pagedir, dir) == NULL)
-    exit (-1);
-
-  /* Determine the "root" directory. */
-  struct dir *real_dir;
-  char *token, *save_ptr;
-  if (strchr (dir, "/") == dir)
-    {
-      token = strtok_r (dir + 1, "/", &save_ptr);
-      real_dir = dir_open_root ();
-    }
-  else
-    {
-      token = strtok_r (dir, "/", &save_ptr);
-      real_dir = t->cwd;
+      int length = strlen (cwd) + strlen (path) + 1;
+      abs_path = malloc (length);
+      strlcpy (abs_path, cwd, strlen (cwd) + 1);
+      strlcat (abs_path + strlen (cwd), path, length);
+      return abs_path;
     }
 
-  /* Crawl down the directory string. */
-  struct inode **inode;
-  for (; token != NULL; token = strtok_r (NULL, "/", &save_ptr))
-    {
-      if (!dir_lookup (real_dir, token, inode))
-        {
-	  block_sector_t dir_sector = free_map_allocate_one ();
-          dir_create (dir_sector, 0);
-          dir_add (real_dir, token, dir_sector, false);
-          return true;
-        }
+  int length = strlen (cwd) + 1 + strlen (path) + 1;
+  abs_path = malloc (length);
+  strlcpy (abs_path, cwd, strlen (cwd) + 1);
+  strlcpy (abs_path + strlen (cwd), "/", 2);
+  strlcat (abs_path + strlen (cwd) + 1, path, length);
 
-      real_dir = dir_open (*inode);      
-    }
-  return false;
-}
-
-/* Reads a directory entry from file descriptor fd, which must represent a directory. If successful, stores the null-terminated file name in name, which must have room for READDIR_MAX_LEN + 1 bytes, and returns true. If no entries are left in the directory, returns false.
-   . and .. should not be returned by readdir.*/
-bool
-readdir (int fd, char *name)
-{
-  
-}
-
-/* Returns true if fd represents a directory, false if it represents an ordinary file. */
-bool
-isdir (int fd)
-{
-  //struct file *f = lookup_fd (fd);
-}
-
-/* Returns the inode number of the inode associated with fd, which may represent an ordinary file or a directory. */
-int
-inumber (int fd)
-{
+  return abs_path;
 }

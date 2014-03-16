@@ -6,25 +6,6 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
-/* A directory. */
-struct dir 
-  {
-    struct inode *inode;                /* Backing store. */
-    off_t pos;                          /* Current position. */
-  };
-
-/* A single directory entry. */
-struct dir_entry 
-  {
-    //int fd;                             /* File descriptor. */
-    //struct hash_elem elem;              /* Hashtable element. */
-    bool isdir;                         /* If true, this is a directory. */
-    block_sector_t inode_sector;        /* Sector number of header. */
-    char name[NAME_MAX + 1];            /* Null terminated file or directory
-                                           name. */
-    bool in_use;                        /* In use or free? */
-  };
-
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool
@@ -43,6 +24,7 @@ dir_open (struct inode *inode)
     {
       dir->inode = inode;
       dir->pos = 0;
+      inode->object = dir;
       return dir;
     }
   else
@@ -58,7 +40,7 @@ dir_open (struct inode *inode)
 struct dir *
 dir_open_root (void)
 {
-  return dir_open (inode_open (ROOT_DIR_SECTOR));
+  return dir_open (inode_open (ROOT_DIR_SECTOR, true));
 }
 
 /* Opens and returns a new directory for the same inode as DIR.
@@ -104,14 +86,16 @@ lookup (const struct dir *dir, const char *name,
 
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
-    if (e.in_use && !strcmp (name, e.name)) 
-      {
-        if (ep != NULL)
-          *ep = e;
-        if (ofsp != NULL)
-          *ofsp = ofs;
-        return true;
-      }
+    {
+      if (e.in_use && !strcmp (name, e.name)) 
+        {
+          if (ep != NULL)
+            *ep = e;
+          if (ofsp != NULL)
+            *ofsp = ofs;
+          return true;
+        }
+    }
   return false;
 }
 
@@ -128,8 +112,9 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+
   if (lookup (dir, name, &e, NULL))
-    *inode = inode_open (e.inode_sector);
+    *inode = inode_open (e.inode_sector, e.isdir);
   else
     *inode = NULL;
 
@@ -203,7 +188,7 @@ dir_remove (struct dir *dir, const char *name)
     goto done;
 
   /* Open inode. */
-  inode = inode_open (e.inode_sector);
+  inode = inode_open (e.inode_sector, e.isdir);
   if (inode == NULL)
     goto done;
 
@@ -238,5 +223,6 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
           return true;
         } 
     }
+
   return false;
 }

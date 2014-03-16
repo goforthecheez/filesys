@@ -4,12 +4,33 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "devices/block.h"
+#include "filesys/filesys.h"
+#include "lib/kernel/hash.h"
 
 /* Maximum length of a file name component.
    This is the traditional UNIX maximum length.
    After directories are implemented, this maximum length may be
    retained, but much longer full path names must be allowed. */
 #define NAME_MAX 17
+
+/* A directory. */
+struct dir
+  {
+    struct inode *inode;                /* Backing store. */
+    off_t pos;                          /* Current position. */
+  };
+
+/* A single directory entry. */
+struct dir_entry
+  {
+    int fd;                             /* File descriptor. */
+    struct hash_elem elem;              /* Hashtable element. */
+    bool isdir;                         /* If true, this is a directory. */
+    block_sector_t inode_sector;        /* Sector number of header. */
+    char name[NAME_MAX + 1];            /* Null terminated file or directory
+                                           name. */
+    bool in_use;                        /* In use or free? */
+  };
 
 struct inode;
 
