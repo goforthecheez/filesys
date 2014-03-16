@@ -3,11 +3,6 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
-/* Global file descriptor counter. This begins counting at 3 because file
-   descriptors 0, 1, and 2 are reserved for stdin, stdout, and stderr,
-   respectively. */
-int fd_counter = 3;
-
 /* Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
    allocation fails or if INODE is null. */
@@ -17,11 +12,10 @@ file_open (struct inode *inode)
   struct file *file = calloc (1, sizeof *file);
   if (inode != NULL && file != NULL)
     {
-      file->fd = fd_counter;
-      fd_counter++;
-      file->inode = inode;
+       file->inode = inode;
       file->pos = 0;
       file->deny_write = false;
+      inode->object = file;
       return file;
     }
   else

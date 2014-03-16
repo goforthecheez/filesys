@@ -91,7 +91,7 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
-    struct dir *cwd;                    /* Current working directory. */
+    char **cwd;                         /* Current working directory. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
@@ -107,7 +107,7 @@ struct thread
                                            started. */
     struct condition child_cond;        /* Conditional variable for
                                            child_ready. */
-    struct hash *open_files;            /* Files opened by this process. */
+    struct hash *open_inodes;            /* Files opened by this process. */
     struct file *my_executable;         /* Executable file this process is
                                            running. */
 #endif

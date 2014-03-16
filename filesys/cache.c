@@ -171,5 +171,4 @@ cache_clear (int index)
   //  if (buffer_cache.cache[index].dirty == true)
     block_write (fs_device, buffer_cache.cache[index].sector,
                  buffer_cache.cache[index].data);
-
 }

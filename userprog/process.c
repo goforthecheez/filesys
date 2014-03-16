@@ -299,7 +299,7 @@ load (char *cmd_line, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
-  file = filesys_open (argv[0]);
+  file = file_open (filesys_open (argv[0]));
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", argv[0]);

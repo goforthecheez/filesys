@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "filesys/cache.h"
+#include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/flags.h"
@@ -72,11 +73,11 @@ static bool is_thread (struct thread *) UNUSED;
 static unsigned child_hash_hash_func (const struct hash_elem *, void * UNUSED);
 static bool child_hash_less_func (const struct hash_elem *,
                                   const struct hash_elem *, void * UNUSED);
-static unsigned file_hash_hash_func (const struct hash_elem *, void * UNUSED);
-static bool file_hash_less_func (const struct hash_elem *,
+static unsigned inode_hash_hash_func (const struct hash_elem *, void * UNUSED);
+static bool inode_hash_less_func (const struct hash_elem *,
                                  const struct hash_elem *, void * UNUSED);
 void hash_destroy_child (struct hash_elem *, void * UNUSED);
-void hash_destroy_file (struct hash_elem *, void * UNUSED);
+void hash_destroy_inode (struct hash_elem *, void * UNUSED);
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
@@ -126,13 +127,13 @@ thread_start (void)
   intr_enable ();
 
   /* Now that interrupts have been enabled, initialize the
-     initial thread's children and open_files hashtables. */
+     initial thread's children and open_inodes hashtables. */
   initial_thread->children = (struct hash *)malloc (sizeof (struct hash));
-  initial_thread->open_files = (struct hash *)malloc (sizeof (struct hash));
+  initial_thread->open_inodes = (struct hash *)malloc (sizeof (struct hash));
   hash_init (initial_thread->children, child_hash_hash_func,
              child_hash_less_func, NULL);
-  hash_init (initial_thread->open_files, file_hash_hash_func,
-             file_hash_less_func, NULL);
+  hash_init (initial_thread->open_inodes, inode_hash_hash_func,
+             inode_hash_less_func, NULL);
 
   /* Wait for the idle thread to initialize idle_thread. */
   sema_down (&idle_started);
@@ -222,20 +223,17 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
-  if (strcmp (t->name, "main") == 0)
-    t->cwd = dir_open_root ();
-
   if (strcmp (t->name, "idle") != 0)
     {
       t->parent = thread_current ();
 
       /* Initialize hashtables. */
       t->children = (struct hash *)malloc (sizeof (struct hash));
-      t->open_files = (struct hash *)malloc (sizeof (struct hash));
+      t->open_inodes = (struct hash *)malloc (sizeof (struct hash));
       hash_init (t->children, child_hash_hash_func,
                  child_hash_less_func, NULL);
-      hash_init (t->open_files, file_hash_hash_func,
-                 file_hash_less_func, NULL);
+      hash_init (t->open_inodes, inode_hash_hash_func,
+                 inode_hash_less_func, NULL);
 
       /* Register thread as its parent's child. */
       struct child *c = (struct child *)malloc (sizeof (struct child));
@@ -243,7 +241,7 @@ thread_create (const char *name, int priority,
       c->done = false;
       hash_insert (t->parent->children, &c->elem);
 
-      /* Inherit parent's current working directory. */
+      /* Inherit current working directory from parent. */
       t->cwd = t->parent->cwd;
     }
 
@@ -341,9 +339,9 @@ thread_exit (void)
 
   /* Free the current thread. */
   hash_destroy (t->children, hash_destroy_child);
-  hash_destroy (t->open_files, hash_destroy_file);
+  hash_destroy (t->open_inodes, hash_destroy_inode);
   free (t->children);
-  free (t->open_files);
+  free (t->open_inodes);
   if (t->my_executable != NULL)
     file_close (t->my_executable);
 #endif
@@ -525,18 +523,18 @@ child_hash_less_func (const struct hash_elem *a, const struct hash_elem *b,
 }
 
 static unsigned
-file_hash_hash_func (const struct hash_elem *e, void *aux UNUSED)
+inode_hash_hash_func (const struct hash_elem *e, void *aux UNUSED)
 {
-  struct file *f = hash_entry (e, struct file, elem);
-  return f->fd;
+  struct inode *inode = hash_entry (e, struct inode, hashelem);
+  return inode->fd;
 }
 
 static bool
-file_hash_less_func (const struct hash_elem *a, const struct hash_elem *b,
+inode_hash_less_func (const struct hash_elem *a, const struct hash_elem *b,
                          void * aux UNUSED)
 {
-  struct file *c = hash_entry (a, struct file, elem);
-  struct file *d = hash_entry (b, struct file, elem);
+  struct inode *c = hash_entry (a, struct inode, hashelem);
+  struct inode *d = hash_entry (b, struct inode, hashelem);
   return c->fd < d->fd;
 }
 
@@ -548,11 +546,14 @@ hash_destroy_child (struct hash_elem *e, void *aux UNUSED)
 }
 
 void
-hash_destroy_file (struct hash_elem *e, void *aux UNUSED)
+hash_destroy_inode (struct hash_elem *e, void *aux UNUSED)
 {
-  struct file *f = hash_entry (e, struct file, elem);
+  struct inode *inode = hash_entry (e, struct inode, hashelem);
   lock_acquire (&filesys_lock);
-  file_close (f);
+  if (inode->isdir)
+    dir_close ((struct dir *) inode->object);
+  else
+    file_close ((struct file *) inode->object);
   lock_release (&filesys_lock);
 }
 
