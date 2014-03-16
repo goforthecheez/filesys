@@ -266,7 +266,6 @@ open (const char *path)
       //dir = dir_reopen (dir);
 
       hash_insert (t->open_inodes, &dir->inode->hashelem);
-      printf ("open: fd is %i\n", dir->inode->fd);
       return dir->inode->fd;
     }
 
@@ -286,7 +285,6 @@ open (const char *path)
       //dir = dir_reopen (dir);
 
       hash_insert (t->open_inodes, &dir->inode->hashelem);
-      printf ("open: fd is %i\n", dir->inode->fd);
       return dir->inode->fd;
     }
   else
@@ -297,7 +295,6 @@ open (const char *path)
       //file = file_reopen (file);
 
       hash_insert (t->open_inodes, &file->inode->hashelem);
-      printf ("open: fd is %i\n", file->inode->fd);
       return file->inode->fd;
     }
 }
